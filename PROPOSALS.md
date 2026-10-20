@@ -106,3 +106,21 @@ Per-VM sidecar
 - The NFS layer adds complexity even though the gateway is colocated with the VM.
 - Sidecar injection and VM connectivity require integration with KubeVirt-managed pods.
 - Multiple VMs belonging to the same tenant do not share a driver instance or cache.
+
+## Comparison
+
+| Proposal | Driver location | Driver scope | Guest configuration protected | Extra NFS layer | Main concern |
+| --- | --- | --- | --- | --- | --- |
+| **1. VM image** | Inside the guest | Per VM | No | No | Users can alter configuration or credentials |
+| **2. `virt-launcher`** | VM pod environment | Per VM | Yes | No | KubeVirt customization and upgrade burden |
+| **3. Tenant gateway** | Dedicated pod | Per tenant | Yes | Yes | Tenant-wide bottleneck and failure domain |
+| **4. Per-VM sidecar** | Sidecar container | Per VM | Yes | Yes | Highest resource and operational overhead |
+
+## Recommendation
+
+The current order of preference is:
+
+1. **Proposal 2 — driver in the `virt-launcher` environment**
+2. **Proposal 1 — driver in the VM image**
+3. **Proposal 3 — one gateway per tenant**
+4. **Proposal 4 — one gateway sidecar per VM**
