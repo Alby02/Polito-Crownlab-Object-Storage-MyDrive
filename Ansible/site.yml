@@ -1,0 +1,26 @@
+---
+# Main entrypoint: ansible-playbook site.yml
+
+# 1. Install the k3s cluster using the upstream collection's playbook
+- name: Install k3s
+  ansible.builtin.import_playbook: k3s.orchestration.site
+
+# 2. Copy the kubeconfig to this machine so kubectl can be used through an SSH tunnel
+- name: Fetch kubeconfig
+  hosts: server[0]
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Copy /etc/rancher/k3s/k3s.yaml to ./kubeconfig.yaml
+      ansible.builtin.fetch:
+        src: /etc/rancher/k3s/k3s.yaml
+        dest: "{{ playbook_dir }}/kubeconfig.yaml"
+        flat: true
+
+    - name: Point kubeconfig at the local end of the SSH tunnel
+      ansible.builtin.replace:
+        path: "{{ playbook_dir }}/kubeconfig.yaml"
+        regexp: 'server: https://.*:6443'
+        replace: 'server: https://127.0.0.1:6443'
+      delegate_to: localhost
+      become: false

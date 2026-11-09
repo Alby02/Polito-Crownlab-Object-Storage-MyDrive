@@ -1,0 +1,3 @@
+[env]
+#   default   -> our k3s cluster (needs the SSH tunnel, see Ansible/README.md)
+KUBECONFIG = "{{config_root}}/Ansible/kubeconfig.yaml"
