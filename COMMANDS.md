@@ -48,3 +48,31 @@ podman run -d \
     --maxmemory-policy noeviction
 
 
+sudo firewall-cmd --permanent --add-port=6379/tcp --add-port=9000/tcp
+sudo firewall-cmd --reload
+
+
+helmfile init
+
+helmfile apply -f juice-helmfile/helmfile.yaml.gotmpl
+kubectl -n kube-system get pods -l app.kubernetes.io/name=juicefs-csi-driver -w
+
+
+kubectl apply -f juicefs-container/juicefs-pvc.yaml
+kubectl apply -f juicefs-container/juicefs-pod-1.yaml
+kubectl apply -f juicefs-container/juicefs-pod-2.yaml
+
+kubectl exec -it juicefs-app-1 -- /bin/bash
+kubectl exec -it juicefs-app-2 -- /bin/bash
+
+
+kubectl -n kubevirt patch kubevirt kubevirt --type=merge \
+  -p '{"spec":{"configuration":{"developerConfiguration":{"featureGates":["EnableVirtioFsStorageVolumes"]}}}}'
+
+
+kubectl create -f manifests/vm2_juicefs.yml
+
+kubectl virt expose vmi vm2 --name=vm2-ssh --port=22222 --target-port=22 --type=NodePort
+ssh -N -L 31556:0.0.0.0:31556 -J bastion@ssh-preprod.crownlabs.polito.it crownlabs@instance-gdxjn-k3s-node1.tenant-s360540
+ssh fedora@localhost -p 31556
+

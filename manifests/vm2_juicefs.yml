@@ -1,0 +1,68 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  labels:
+    kubevirt.io/os: linux
+  name: vm2
+spec:
+  runStrategy: Always
+  # Own root disk: the "fedora" PVC is RWO and already used by vm1
+  dataVolumeTemplates:
+    - metadata:
+        name: vm2-rootdisk
+      spec:
+        storage:
+          storageClassName: local-path
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 5Gi
+        source:
+          http:
+            url: "https://download.fedoraproject.org/pub/fedora/linux/releases/45/Cloud/x86_64/images/Fedora-Cloud-Base-AmazonEC2-45-1.4.x86_64.raw.xz"
+  template:
+    metadata:
+      labels:
+        kubevirt.io/domain: vm2
+    spec:
+      domain:
+        cpu:
+          cores: 2
+        devices:
+          disks:
+            - disk:
+                bus: virtio
+              name: disk0
+            - cdrom:
+                bus: sata
+                readonly: true
+              name: cloudinitdisk
+          # JuiceFS PVC exposed to the guest through VirtioFS (mount tag: juicefs)
+          filesystems:
+            - name: juicefs
+              virtiofs: {}
+        machine:
+          type: q35
+        resources:
+          requests:
+            memory: 1024M
+      volumes:
+        - name: disk0
+          dataVolume:
+            name: vm2-rootdisk
+        - name: juicefs
+          persistentVolumeClaim:
+            claimName: juicefs-pvc
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            userData: |
+              #cloud-config
+              hostname: vm2
+              ssh_pwauth: True
+              disable_root: false
+              ssh_authorized_keys:
+              - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF4TqdyEj5tzNPme3pt7+4yms8EtlHwhDLu/dEmG1mR/ user@DESKTOP-8D9RM1A
+              # Mount the JuiceFS volume at boot (tag = filesystem name above)
+              mounts:
+              - [juicefs, /mnt/juicefs, virtiofs, "defaults,nofail", "0", "0"]
