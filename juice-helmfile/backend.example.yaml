@@ -1,0 +1,10 @@
+# Copy to backend.yaml (git-ignored) and fill in.
+# Endpoints must be reachable from inside the cluster (pods), not just from your laptop.
+juicefs:
+  name: juicefs                              # filesystem name (prefix inside the bucket)
+  metaurl: redis://<redis-host>:6379/1        # Redis on the podman machine (redis-podman/)
+  storage: s3
+  bucket: http://<s3-endpoint>:9000/<bucket> # S3 bucket URL
+  accessKey: emFyUAoCHbNBhSf5vzAG
+  secretKey: vUTtdKgUv0CbfQC7YGVTKEfPLx4InrcdVYSvAyQZ
+

@@ -1,0 +1,35 @@
+# Values for juicefs/juicefs-csi-driver.
+# Backend settings come from ../backend.yaml (see backend.example.yaml).
+
+# k3s uses the standard kubelet directory (also the chart default).
+kubeletDir: /var/lib/kubelet
+
+node:
+  # Fedora/SELinux: the plugin runs privileged (spc_t) and creates /csi/csi.sock;
+  # unprivileged sidecars (container_t) are silently denied connecting to it, so
+  # node-driver-registrar and liveness-probe hang and the pod CrashLoops.
+  sidecarPrivileged: true
+
+storageClasses:
+  - name: juicefs-sc
+    enabled: true
+    reclaimPolicy: Retain
+    allowVolumeExpansion: true
+    # The chart creates the Secret (in kube-system) from these plain values.
+    backend:
+      name: {{ .Values.juicefs.name | quote }}
+      metaurl: {{ .Values.juicefs.metaurl | quote }}
+      storage: {{ .Values.juicefs.storage | default "s3" | quote }}
+      bucket: {{ .Values.juicefs.bucket | quote }}
+      accessKey: {{ .Values.juicefs.accessKey | quote }}
+      secretKey: {{ .Values.juicefs.secretKey | quote }}
+    # Nodes have 4 CPU / 8 GiB: the chart default (1 CPU / 1 GiB request per
+    # mount pod) would quickly exhaust them, so request less.
+    mountPod:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 2000m
+          memory: 2Gi

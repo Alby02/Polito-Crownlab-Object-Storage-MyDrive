@@ -28,3 +28,23 @@ or this:
 kubectl virt expose vmi vm1 --name=vm1-ssh --port=20222 --target-port=22 --type=NodePort
 ssh -N -L 30392:0.0.0.0:30392 -J bastion@ssh-preprod.crownlabs.polito.it crownlabs@instance-gdxjn-k3s-node1.tenant-s360540
 ssh fedora@localhost -p 30392
+
+in endpoin run :
+
+podman run -d \
+  --name juicefs-redis \
+  --restart unless-stopped \
+  -p 6379:6379 \
+  -v juicefs-redis-data:/data \
+  --health-cmd "redis-cli ping" \
+  --health-interval 10s \
+  --health-timeout 3s \
+  --health-retries 5 \
+  docker.io/library/redis:8-alpine \
+  redis-server \
+    --protected-mode no \
+    --appendonly yes \
+    --appendfsync everysec \
+    --maxmemory-policy noeviction
+
+

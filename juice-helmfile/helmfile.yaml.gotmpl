@@ -1,0 +1,24 @@
+# JuiceFS CSI driver for the k3s cluster.
+# Metadata engine (Redis, see ../redis-podman) and S3 are external: configure them in backend.yaml.
+#
+#   cp backend.example.yaml backend.yaml   # then fill in Redis + S3 settings
+#   helmfile diff
+#   helmfile apply
+
+environments:
+  default:
+    values:
+      - backend.yaml
+
+---
+repositories:
+  - name: juicefs
+    url: https://juicedata.github.io/charts/
+
+releases:
+  - name: juicefs-csi-driver
+    namespace: kube-system
+    chart: juicefs/juicefs-csi-driver
+    version: 0.33.3
+    values:
+      - values/juicefs-csi-driver.yaml.gotmpl
