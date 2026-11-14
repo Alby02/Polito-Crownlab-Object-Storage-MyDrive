@@ -12,7 +12,7 @@ spec:
         name: vm2-rootdisk
       spec:
         storage:
-          storageClassName: local-path
+          storageClassName: juicefs-sc
           accessModes:
             - ReadWriteOnce
           resources:
@@ -62,7 +62,9 @@ spec:
               ssh_pwauth: True
               disable_root: false
               ssh_authorized_keys:
-              - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF4TqdyEj5tzNPme3pt7+4yms8EtlHwhDLu/dEmG1mR/ user@DESKTOP-8D9RM1A
+              - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEPlHKVy/e8gzrbWgzpb3om6vvD6a6SxvCF/CGqAxDQB matteominin@MacBook-Pro-3.local
+              - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM0DTfJTuqEhIc1lkSmVrbzhi4fAzc/n2Xe+QRAydMW0 user@DESKTOP-8D9RM1A
+              - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIABl4EEG7Cn8qHdNJeZtJZWcMuuMGmmdWoi4cglyI0nd alberto@DESKTOP-8D9RM1A
               # Mount the JuiceFS volume at boot (tag = filesystem name above)
               mounts:
               - [juicefs, /mnt/juicefs, virtiofs, "defaults,nofail", "0", "0"]
