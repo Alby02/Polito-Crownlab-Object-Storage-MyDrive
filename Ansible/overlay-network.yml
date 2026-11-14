@@ -1,0 +1,85 @@
+---
+# Point-to-point overlay between the k3s nodes: IP-IP encapsulated in UDP (FOU).
+#
+# CrownLabs gives a VM a new IP (almost) every time it restarts, but etcd
+# registers its members by IP. So every node gets a fixed overlay address
+# (`overlay_ip` in the inventory) and k3s runs on top of it (node-ip). Each node
+# has one tunnel per peer, whose remote end is the peer's current VM IP.
+#
+# Plain IP-IP and GRE are dropped between CrownLabs VMs, UDP passes: hence FOU.
+# NetworkManager cannot create FOU tunnels, so they are set up by a script
+# (/usr/local/sbin/overlay-up) run at boot by overlay.service, before k3s.
+#
+# After restarting any VM, re-run this playbook on ALL nodes so every tunnel
+# points at the peers' new IPs:
+#
+#   ansible-playbook overlay-network.yml
+#
+# FOU adds no encryption; pod traffic is still encrypted by flannel
+# (wireguard-native), which runs over the overlay addresses.
+- name: FOU overlay between k3s nodes
+  hosts: k3s_cluster
+  become: true
+  gather_facts: false
+  vars:
+    overlay_peers: "{{ groups['k3s_cluster'] | reject('equalto', inventory_hostname) | list }}"
+  tasks:
+    # Resolve on the node itself: that is the address the other VMs can reach.
+    - name: Resolve the current IP of each peer
+      ansible.builtin.command: "getent ahostsv4 {{ hostvars[item].ansible_host }}.{{ crownlabs_dns_suffix }}"
+      loop: "{{ overlay_peers }}"
+      register: overlay_dns
+      changed_when: false
+
+    - name: Load the FOU and IP-IP modules at boot
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/overlay.conf
+        content: |
+          fou
+          ipip
+        mode: "0644"
+
+    # Peers' current IPs are baked in as fallback for when DNS does not resolve.
+    - name: Install the tunnel script
+      ansible.builtin.template:
+        src: overlay-up.sh.j2
+        dest: /usr/local/sbin/overlay-up
+        mode: "0755"
+
+    - name: Install overlay.service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/overlay.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=FOU overlay tunnels between k3s nodes
+          Wants=network-online.target
+          After=network-online.target
+          # k3s binds to the overlay address (node-ip): bring it up first.
+          Before=k3s.service k3s-agent.service
+
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          ExecStart=/usr/local/sbin/overlay-up
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Enable overlay.service
+      ansible.builtin.systemd_service:
+        name: overlay.service
+        enabled: true
+        daemon_reload: true
+
+    # Run the script directly (not via the service, which stays "active" after
+    # boot): it creates missing tunnels and re-points the ones whose peer moved.
+    - name: Bring up / update the tunnels
+      ansible.builtin.command: /usr/local/sbin/overlay-up
+      register: overlay_up
+      changed_when: "'changed' in overlay_up.stdout"
+
+    - name: Check that every peer answers over the overlay
+      ansible.builtin.command: "ping -c 2 -W 2 {{ hostvars[item].overlay_ip }}"
+      loop: "{{ overlay_peers }}"
+      changed_when: false

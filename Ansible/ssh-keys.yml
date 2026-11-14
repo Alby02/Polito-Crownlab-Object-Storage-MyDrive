@@ -1,0 +1,17 @@
+---
+# Add the public keys listed in `ssh_authorized_keys` (inventory) to the
+# authorized_keys of ansible_user on every node. Existing keys are kept.
+#
+#   ansible-playbook ssh-keys.yml
+- name: Authorized SSH keys
+  hosts: k3s_cluster
+  gather_facts: false
+  tasks:
+    - name: Add public key
+      ansible.posix.authorized_key:
+        user: "{{ ansible_user }}"
+        key: "{{ item }}"
+        state: present
+      loop: "{{ ssh_authorized_keys }}"
+      loop_control:
+        label: "{{ item.split()[-1] }}"

@@ -51,6 +51,10 @@ podman run -d \
 sudo firewall-cmd --permanent --add-port=6379/tcp --add-port=9000/tcp
 sudo firewall-cmd --reload
 
+sudo loginctl enable-linger crownlabs
+loginctl show-user crownlabs -p Linger    # should print Linger=yes
+
+
 
 helmfile init
 
