@@ -1,0 +1,5 @@
+apiVersion: v2
+name: juicefs-meta
+description: PostgreSQL cluster (CloudNativePG) used as the JuiceFS metadata engine
+type: application
+version: 0.1.0

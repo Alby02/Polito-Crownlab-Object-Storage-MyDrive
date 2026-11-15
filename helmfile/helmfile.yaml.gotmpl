@@ -1,0 +1,49 @@
+# JuiceFS on the k3s cluster (KubeVirt/CDI are installed with kubectl, see ../COMMANDS.md):
+#   - cloudnative-pg      CloudNativePG operator
+#   - juicefs-meta        PostgreSQL cluster (3 instances, local-path) = JuiceFS metadata engine
+#   - juicefs-csi-driver  JuiceFS CSI driver + juicefs-sc StorageClass
+# S3 (object storage) stays external: configure it in backend.yaml.
+#
+#   cp backend.example.yaml backend.yaml   # then fill in the password + S3 settings
+#   helmfile diff
+#   helmfile apply
+
+environments:
+  default:
+    values:
+      - backend.yaml
+
+---
+repositories:
+  - name: juicefs
+    url: https://juicedata.github.io/charts/
+  - name: cnpg
+    url: https://cloudnative-pg.github.io/charts
+
+releases:
+  - name: cloudnative-pg
+    namespace: cnpg-system
+    chart: cnpg/cloudnative-pg
+    version: 0.29.1
+    # Wait for the operator to be ready: its webhook must answer before the
+    # juicefs-meta Cluster can be created.
+    wait: true
+
+  - name: juicefs-meta
+    namespace: juicefs
+    chart: ./charts/juicefs-meta
+    # The Cluster CRD comes from the operator chart.
+    needs:
+      - cnpg-system/cloudnative-pg
+    disableValidationOnInstall: true
+    values:
+      - password: {{ .Values.juicefs.meta.password | quote }}
+
+  - name: juicefs-csi-driver
+    namespace: kube-system
+    chart: juicefs/juicefs-csi-driver
+    version: 0.33.3
+    needs:
+      - juicefs/juicefs-meta
+    values:
+      - values/juicefs-csi-driver.yaml.gotmpl

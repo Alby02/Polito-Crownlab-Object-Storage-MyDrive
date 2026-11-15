@@ -1,0 +1,37 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: juicefs-meta
+spec:
+  instances: {{ .Values.instances }}
+
+  # local-path volumes are bound to the node that created them, so each
+  # instance always comes back on the same node (also after a full restart).
+  storage:
+    storageClass: {{ .Values.storage.storageClass }}
+    size: {{ .Values.storage.size }}
+
+  # One instance per node: losing a node loses at most one copy of the data.
+  affinity:
+    enablePodAntiAffinity: true
+    podAntiAffinityType: required
+    topologyKey: kubernetes.io/hostname
+
+  # A commit is acknowledged only once at least one standby has it, so a
+  # failover never loses metadata writes (async replication can, and that
+  # corrupts JuiceFS). With 3 instances, one may be down without blocking writes.
+  postgresql:
+    synchronous:
+      method: any
+      number: 1
+      dataDurability: required
+
+  bootstrap:
+    initdb:
+      database: juicefs
+      owner: juicefs
+      secret:
+        name: juicefs-meta-credentials
+
+  resources:
+    {{- toYaml .Values.resources | nindent 4 }}

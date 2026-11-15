@@ -1,0 +1,17 @@
+# Upstream kubevirt-cr.yaml, plus our configuration.
+# Deleting this resource uninstalls KubeVirt (blocked while VMs exist).
+apiVersion: kubevirt.io/v1
+kind: KubeVirt
+metadata:
+  name: kubevirt
+  namespace: kubevirt
+spec:
+  certificateRotateStrategy: {}
+  configuration:
+    developerConfiguration:
+      featureGates:
+        # Share PVCs (the JuiceFS volume) with the guests through VirtioFS.
+        - EnableVirtioFsStorageVolumes
+  customizeComponents: {}
+  imagePullPolicy: IfNotPresent
+  workloadUpdateStrategy: {}

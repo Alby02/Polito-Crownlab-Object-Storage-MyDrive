@@ -18,7 +18,9 @@ storageClasses:
     # The chart creates the Secret (in kube-system) from these plain values.
     backend:
       name: {{ .Values.juicefs.name | quote }}
-      metaurl: {{ .Values.juicefs.metaurl | quote }}
+      # juicefs-meta-rw always points at the current PostgreSQL primary.
+      # The password is used as-is in the URL: keep it alphanumeric.
+      metaurl: {{ printf "postgres://juicefs:%s@juicefs-meta-rw.juicefs.svc.cluster.local:5432/juicefs?sslmode=require" .Values.juicefs.meta.password | quote }}
       storage: {{ .Values.juicefs.storage | default "s3" | quote }}
       bucket: {{ .Values.juicefs.bucket | quote }}
       accessKey: {{ .Values.juicefs.accessKey | quote }}

@@ -17,7 +17,7 @@ spec:
             - ReadWriteOnce
           resources:
             requests:
-              storage: 5Gi
+              storage: 7Gi
         source:
           http:
             url: "https://download.fedoraproject.org/pub/fedora/linux/releases/45/Cloud/x86_64/images/Fedora-Cloud-Base-AmazonEC2-45-1.4.x86_64.raw.xz"
@@ -46,7 +46,7 @@ spec:
           type: q35
         resources:
           requests:
-            memory: 1024M
+            memory: 2048M
       volumes:
         - name: disk0
           dataVolume:
@@ -65,6 +65,20 @@ spec:
               - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEPlHKVy/e8gzrbWgzpb3om6vvD6a6SxvCF/CGqAxDQB matteominin@MacBook-Pro-3.local
               - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM0DTfJTuqEhIc1lkSmVrbzhi4fAzc/n2Xe+QRAydMW0 user@DESKTOP-8D9RM1A
               - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIABl4EEG7Cn8qHdNJeZtJZWcMuuMGmmdWoi4cglyI0nd alberto@DESKTOP-8D9RM1A
-              # Mount the JuiceFS volume at boot (tag = filesystem name above)
+              # virtiofsd runs as qemu (uid/gid 107) in virt-launcher: every file on
+              # the share is owned by 107, so only root could write to /mnt/juicefs.
+              # bindfs re-exposes it at ~/drive with 107 shown as the fedora user
+              # (1000); new files are still stored as 107 on JuiceFS.
+              packages:
+              - bindfs
+              - fuse
+              # Mount the JuiceFS volume at boot (tag = filesystem name above),
+              # then the remapped view for the fedora user.
               mounts:
               - [juicefs, /mnt/juicefs, virtiofs, "defaults,nofail", "0", "0"]
+              - [/mnt/juicefs, /mnt/drive, fuse.bindfs, "map=107/1000:@107/@1000,x-systemd.requires-mounts-for=/mnt/juicefs,nofail", "0", "0"]
+              # On first boot the fstab entry is written before bindfs is installed:
+              # mount it once here (later boots use fstab).
+              runcmd:
+              - mkdir -p /mnt/drive
+              - mount /mnt/drive

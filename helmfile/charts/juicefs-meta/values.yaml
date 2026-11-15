@@ -1,0 +1,14 @@
+# Set by ../../helmfile.yaml.gotmpl from backend.yaml.
+password: ""
+
+instances: 3
+storage:
+  # Metadata cannot live on JuiceFS itself: node-local disks, one per instance.
+  storageClass: local-path
+  size: 2Gi
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 1Gi
