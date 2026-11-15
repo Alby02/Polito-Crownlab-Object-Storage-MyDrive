@@ -8,6 +8,11 @@ metadata:
 spec:
   certificateRotateStrategy: {}
   configuration:
+    # Default CPU model of every VM. The default (host-model) exposes all the
+    # features of the node the VM boots on, and the nodes differ, so VMs could
+    # not live-migrate. Newest model supported by all 3 nodes; to re-check:
+    #   kubectl get nodes -o json | jq -r '.items[].metadata.labels | keys[] | select(startswith("cpu-model.node.kubevirt.io/"))' | sort | uniq -c
+    cpuModel: Icelake-Server-v2
     developerConfiguration:
       featureGates:
         # Share PVCs (the JuiceFS volume) with the guests through VirtioFS.

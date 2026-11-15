@@ -13,8 +13,9 @@ spec:
       spec:
         storage:
           storageClassName: juicefs-sc
+          # RWX: live migration attaches the disk on both nodes during the move
           accessModes:
-            - ReadWriteOnce
+            - ReadWriteMany
           resources:
             requests:
               storage: 7Gi
@@ -38,6 +39,11 @@ spec:
                 bus: sata
                 readonly: true
               name: cloudinitdisk
+          # Masquerade (NAT behind the pod IP): required for live migration,
+          # the default bridge binding is not migratable.
+          interfaces:
+            - name: default
+              masquerade: {}
           # JuiceFS PVC exposed to the guest through VirtioFS (mount tag: juicefs)
           filesystems:
             - name: juicefs
@@ -47,6 +53,9 @@ spec:
         resources:
           requests:
             memory: 2048M
+      networks:
+        - name: default
+          pod: {}
       volumes:
         - name: disk0
           dataVolume:
