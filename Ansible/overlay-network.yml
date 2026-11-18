@@ -10,8 +10,10 @@
 # NetworkManager cannot create FOU tunnels, so they are set up by a script
 # (/usr/local/sbin/overlay-up) run at boot by overlay.service, before k3s.
 #
-# After restarting any VM, re-run this playbook on ALL nodes so every tunnel
-# points at the peers' new IPs:
+# When a peer VM restarts with a new IP, overlay-refresh.timer re-runs the
+# script every 30 s on every node, so the tunnels follow it within ~30 s with
+# no manual step. Re-run this playbook only after changing the inventory or
+# the script itself:
 #
 #   ansible-playbook overlay-network.yml
 #
@@ -70,6 +72,47 @@
       ansible.builtin.systemd_service:
         name: overlay.service
         enabled: true
+        daemon_reload: true
+
+    # overlay.service is RemainAfterExit (k3s orders itself after it), so it
+    # stays "active" and a timer could never start it again: the periodic run
+    # needs its own plain oneshot unit.
+    - name: Install overlay-refresh.service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/overlay-refresh.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Re-point the FOU overlay tunnels at the peers' current IPs
+          After=overlay.service
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/sbin/overlay-up
+
+    # Every 30 s: re-resolve the peers' DNS names and re-point any tunnel whose
+    # peer got a new IP (no-op when nothing changed).
+    - name: Install overlay-refresh.timer
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/overlay-refresh.timer
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Refresh the FOU overlay tunnels every 30 s
+
+          [Timer]
+          OnBootSec=30s
+          OnUnitActiveSec=30s
+          AccuracySec=1s
+
+          [Install]
+          WantedBy=timers.target
+
+    - name: Enable and start overlay-refresh.timer
+      ansible.builtin.systemd_service:
+        name: overlay-refresh.timer
+        enabled: true
+        state: started
         daemon_reload: true
 
     # Run the script directly (not via the service, which stays "active" after

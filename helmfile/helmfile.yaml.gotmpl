@@ -2,7 +2,8 @@
 #   - cloudnative-pg      CloudNativePG operator
 #   - juicefs-meta        PostgreSQL cluster (3 instances, local-path) = JuiceFS metadata engine
 #   - juicefs-csi-driver  JuiceFS CSI driver + juicefs-sc StorageClass
-# S3 (object storage) stays external: configure it in backend.yaml.
+#   - rustfs              distributed S3 object storage (3 pods x 1 local-path drive)
+# JuiceFS's S3 backend is configured in backend.yaml (external, or RustFS).
 #
 #   cp backend.example.yaml backend.yaml   # then fill in the password + S3 settings
 #   helmfile diff
@@ -19,6 +20,8 @@ repositories:
     url: https://juicedata.github.io/charts/
   - name: cnpg
     url: https://cloudnative-pg.github.io/charts
+  - name: rustfs
+    url: https://charts.rustfs.com
 
 releases:
   - name: cloudnative-pg
@@ -43,7 +46,21 @@ releases:
     namespace: kube-system
     chart: juicefs/juicefs-csi-driver
     version: 0.33.3
+    # rustfs: JuiceFS's S3 backend (when backend.yaml points at it). The
+    # bucket needs no manual step: `juicefs format`, run by the driver for the
+    # first volume, creates it if it does not exist.
     needs:
       - juicefs/juicefs-meta
+      - rustfs/rustfs
     values:
       - values/juicefs-csi-driver.yaml.gotmpl
+
+  - name: rustfs
+    namespace: rustfs
+    chart: rustfs/rustfs
+    version: 1.0.6
+    # Wait for all 3 pods to be Ready before installing what depends on it.
+    wait: true
+    timeout: 600
+    values:
+      - values/rustfs.yaml.gotmpl

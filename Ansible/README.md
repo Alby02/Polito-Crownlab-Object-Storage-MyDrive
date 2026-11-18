@@ -40,7 +40,7 @@ ansible-galaxy collection install -r requirements.yml
 
 ansible all -m ping                       # check connectivity
 ansible-playbook site.yml                 # install / reconcile the cluster (idempotent)
-ansible-playbook overlay-network.yml      # after restarting any VM: re-point the tunnels
+ansible-playbook overlay-network.yml      # overlay tunnels + 30 s refresh timer (VM restarts are then handled automatically)
 ansible-playbook k3s.orchestration.reset  # uninstall k3s from all nodes
 ansible-playbook k3s.orchestration.upgrade  # after bumping k3s_version in the inventory
 ```
@@ -79,10 +79,11 @@ KUBECONFIG=$PWD/kubeconfig.yaml kubectl get nodes
   IP-IP and GRE are dropped between CrownLabs VMs, so the tunnels are IP-IP
   over UDP 5555 (FOU), set up by `/usr/local/sbin/overlay-up` from
   `overlay.service` at boot, before k3s. At boot each node resolves its peers'
-  DNS names, but a peer that restarts later gets a new IP: **after restarting
-  any VM, run `ansible-playbook overlay-network.yml`** (on all nodes, the default) and
-  etcd/flannel reconnect. FOU is unencrypted; pod traffic is still encrypted
-  by flannel's WireGuard.
+  DNS names, and a peer that restarts later gets a new IP: `overlay-refresh.timer`
+  re-runs the script every 30 s, so the tunnels follow it and etcd/flannel
+  reconnect on their own within ~30 s. Check it with
+  `systemctl list-timers overlay-refresh.timer` / `journalctl -u overlay-refresh`.
+  FOU is unencrypted; pod traffic is still encrypted by flannel's WireGuard.
 - **Changing a node's role** (agent <-> server): run `k3s.orchestration.reset`
   *before* editing the inventory, since reset picks the uninstall script
   (`k3s-uninstall.sh` vs `k3s-agent-uninstall.sh`) based on the current group.

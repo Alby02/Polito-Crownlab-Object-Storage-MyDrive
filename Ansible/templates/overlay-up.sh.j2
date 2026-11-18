@@ -2,11 +2,13 @@
 # {{ ansible_managed }}
 #
 # Bring up / update the FOU (IP-IP over UDP) tunnels of this node, one per peer.
-# Run at boot by overlay.service and by overlay-network.yml after a VM restart.
+# Run at boot by overlay.service, every 30 s by overlay-refresh.timer, and by
+# overlay-network.yml.
 #
-# Each peer's remote IP comes from its CrownLabs DNS name; if that does not
-# resolve (e.g. the peer VM is off) the IP recorded by the last Ansible run is
-# used, so the overlay address always exists and k3s can start.
+# Each peer's remote IP comes from its CrownLabs DNS name. If that does not
+# resolve (e.g. the peer VM is off), an existing tunnel is left as it is; a
+# missing one is created with the IP recorded by the last Ansible run, so the
+# overlay address always exists and k3s can start.
 set -uo pipefail
 
 SELF_OVERLAY={{ overlay_ip }}
@@ -25,13 +27,21 @@ ip fou show | grep -q "port $FOU_PORT " || ip fou add port "$FOU_PORT" ipproto 4
 
 while read -r name fqdn overlay fallback; do
   [ -z "$name" ] && continue
+  dev="ovl-$name"
+  encap=(encap fou encap-sport auto encap-dport "$FOU_PORT")
   remote=$(getent ahostsv4 "$fqdn" | awk 'NR==1{print $1}')
+
   if [ -z "$remote" ]; then
+    if ip link show "$dev" &>/dev/null; then
+      # Keep pointing where we were: that IP is at least as fresh as the fallback.
+      echo "$name: cannot resolve $fqdn, keeping current tunnel"
+      ip addr replace "$SELF_OVERLAY/32" peer "$overlay/32" dev "$dev"
+      ip link set "$dev" up
+      continue
+    fi
     echo "$name: cannot resolve $fqdn, using last known IP $fallback"
     remote=$fallback
   fi
-  dev="ovl-$name"
-  encap=(encap fou encap-sport auto encap-dport "$FOU_PORT")
 
   if ! ip link show "$dev" &>/dev/null; then
     ip link add "$dev" type ipip remote "$remote" "${encap[@]}"   # no 'local': our own IP changes too

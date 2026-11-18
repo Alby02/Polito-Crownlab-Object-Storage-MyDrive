@@ -1,0 +1,58 @@
+# Values for rustfs/rustfs: one distributed RustFS cluster across the 3 nodes.
+# Credentials and sizes come from ../backend.yaml (see backend.example.yaml).
+#
+# 3 pods (one per node, chart anti-affinity) x 1 drive = 3 drives in one
+# erasure set. The drives are local-path PVCs, i.e. directories on each node's
+# disk: RustFS replicates across nodes itself, so the storage below it does not
+# need to be shared. One drive per node because RustFS refuses several drives
+# on the same physical disk ("local erasure endpoints must use distinct
+# physical disks"), and they would add no protection anyway.
+
+# Peers reach each other via the headless Service DNS names
+# (rustfs-N.rustfs-headless.rustfs.svc.cluster.local), so a pod restarting with
+# a new IP rejoins on its own.
+
+replicaCount: 3
+# Fixed at install: changing it later means recreating the StatefulSet.
+# With 1 the drive is mounted at /data.
+drivesPerNode: 1
+
+mode:
+  distributed:
+    enabled: true
+
+secret:
+  rustfs:
+    access_key: {{ .Values.rustfs.accessKey | quote }}
+    secret_key: {{ .Values.rustfs.secretKey | quote }}
+
+config:
+  rustfs:
+    ec:
+      # 3 drives = 2 data + 1 parity: data survives losing a whole node and the
+      # 2 left are still enough to write. Usable capacity = 2/3 of raw.
+      storage_class_standard: "EC:1"
+    # Empty: log to stdout (kubectl logs) instead of a separate logs PVC.
+    obs_log_directory: ""
+
+storageclass:
+  name: local-path
+  # Per drive. local-path does not enforce it: the real limit is the node disk.
+  dataStorageSize: {{ .Values.rustfs.driveSize | default "10Gi" | quote }}
+
+# k3s ships Traefik, not ingress-nginx; reach RustFS through the Service
+# (rustfs-svc.rustfs.svc.cluster.local:9000, console :9001) or port-forward.
+ingress:
+  enabled: false
+
+# Let `kubectl drain` take at most one RustFS pod down at a time.
+pdb:
+  create: true
+  maxUnavailable: 1
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 512Mi
+  limits:
+    memory: 2Gi

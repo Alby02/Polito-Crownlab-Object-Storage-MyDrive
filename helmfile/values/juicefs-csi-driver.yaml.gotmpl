@@ -13,7 +13,10 @@ node:
 storageClasses:
   - name: juicefs-sc
     enabled: true
-    reclaimPolicy: Retain
+    # Delete: removing a PVC also deletes its PV and its subdirectory (data)
+    # inside the JuiceFS filesystem. Immutable on an existing StorageClass:
+    # delete juicefs-sc before `helmfile apply` to change it.
+    reclaimPolicy: Delete
     allowVolumeExpansion: true
     # The chart creates the Secret (in kube-system) from these plain values.
     backend:
