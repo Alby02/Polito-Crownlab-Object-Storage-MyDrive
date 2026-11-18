@@ -1,7 +1,8 @@
+# Test pod with the JuiceFS volume mounted directly through the CSI driver.
 apiVersion: v1
 kind: Pod
 metadata:
-  name: juicefs-app-2
+  name: pod-juicefs
   namespace: default
 spec:
   containers:

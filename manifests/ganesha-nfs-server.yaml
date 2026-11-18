@@ -1,0 +1,122 @@
+# NFS-Ganesha re-exporting the JuiceFS volume (juicefs-pvc) over NFSv4, so
+# clients without the CSI driver (e.g. vm-nfs-ganesha) see the same files as vm-juicefs (VirtioFS).
+#
+#   kubectl apply -f manifests/ganesha-nfs-server.yaml
+#
+# Clients mount:  ganesha-nfs.default.svc.cluster.local:/juicefs  (NFSv4, TCP 2049)
+#
+# Ownership: vm-juicefs writes through virtiofsd, so every file on the share is owned
+# by uid/gid 107 (qemu). All_Squash maps every NFS client user to 107 as well,
+# so files written through NFS look the same as the ones written by vm-juicefs and any
+# user in the guest can read/write the share.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ganesha-config
+  namespace: default
+data:
+  ganesha.conf: |
+    NFS_CORE_PARAM {
+        # NFSv4 only: v3 needs rpcbind/mountd, which the container doesn't run
+        Protocols = 4;
+        # No UDP listener and no quota service: Ganesha registers both with
+        # rpcbind, which isn't in the container, and exits when that fails
+        Enable_UDP = false;
+        Enable_RQUOTA = false;
+        # Ganesha exits at startup if it can't set PR_SET_IO_FLUSHER (needs
+        # CAP_SYS_RESOURCE, which the container doesn't have)
+        allow_set_io_flusher_fail = true;
+    }
+
+    NFSv4 {
+        # Skip the 90 s after each start when clients can't open/create files
+        Graceless = true;
+    }
+
+    EXPORT {
+        Export_Id = 1;
+        Path = /export;            # folder in the container (the JuiceFS PVC)
+        Pseudo = /juicefs;         # path clients mount (server:/juicefs)
+        Access_Type = RW;
+        # Every client user acts as 107, the owner of vm-juicefs's files
+        Squash = All_Squash;
+        Anonymous_Uid = 107;
+        Anonymous_Gid = 107;
+
+        FSAL {
+            Name = VFS;            # serve a local folder
+        }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ganesha-server
+  namespace: default
+spec:
+  replicas: 1
+  # Never run two servers on the same export at once.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: ganesha-server
+  template:
+    metadata:
+      labels:
+        app: ganesha-server
+    spec:
+      containers:
+        - name: ganesha
+          image: ghcr.io/kubernetes-sigs/nfs-ganesha:v6.5
+          command:
+            - /usr/local/bin/ganesha.nfsd
+          args: ["-F", "-L", "STDOUT", "-f", "/etc/ganesha/ganesha.conf"]
+          securityContext:
+            runAsUser: 0
+            capabilities:
+              add:
+                # FSAL VFS uses open_by_handle_at()
+                - DAC_READ_SEARCH
+          ports:
+            - containerPort: 2049
+              name: nfs
+              protocol: TCP
+          readinessProbe:
+            tcpSocket:
+              port: nfs
+            periodSeconds: 10
+          volumeMounts:
+            - name: juicefs
+              mountPath: /export
+              # Re-mounted by the JuiceFS mount pod if it restarts
+              mountPropagation: HostToContainer
+            - name: config
+              mountPath: /etc/ganesha/ganesha.conf
+              subPath: ganesha.conf
+            - name: ganesha-run
+              mountPath: /usr/local/var/run/ganesha
+      volumes:
+        - name: juicefs
+          persistentVolumeClaim:
+            claimName: juicefs-pvc
+        - name: config
+          configMap:
+            name: ganesha-config
+        - name: ganesha-run
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ganesha-nfs
+  namespace: default
+spec:
+  type: ClusterIP
+  selector:
+    app: ganesha-server
+  ports:
+    - name: nfs
+      port: 2049
+      targetPort: nfs
+      protocol: TCP

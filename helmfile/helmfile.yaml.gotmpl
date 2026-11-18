@@ -3,9 +3,9 @@
 #   - juicefs-meta        PostgreSQL cluster (3 instances, local-path) = JuiceFS metadata engine
 #   - juicefs-csi-driver  JuiceFS CSI driver + juicefs-sc StorageClass
 #   - rustfs              distributed S3 object storage (3 pods x 1 local-path drive)
-# JuiceFS's S3 backend is configured in backend.yaml (external, or RustFS).
+# JuiceFS stores its data in RustFS (settings in backend.yaml).
 #
-#   cp backend.example.yaml backend.yaml   # then fill in the password + S3 settings
+#   cp backend.example.yaml backend.yaml   # then fill in the passwords + keys
 #   helmfile diff
 #   helmfile apply
 

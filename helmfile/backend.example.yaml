@@ -1,5 +1,4 @@
 # Copy to backend.yaml (git-ignored) and fill in.
-# Endpoints must be reachable from inside the cluster (pods), not just from your laptop.
 juicefs:
   name: juicefs                              # filesystem name (prefix inside the bucket)
   meta:
@@ -8,17 +7,15 @@ juicefs:
     #   openssl rand -hex 24
     password: <password>
   storage: s3
-  # S3 bucket URL; created automatically if missing. With the in-cluster RustFS:
-  #   http://rustfs-svc.rustfs.svc.cluster.local:9000/juicefs
-  bucket: http://<s3-endpoint>:9000/<bucket>
+  # Bucket in the in-cluster RustFS; created automatically if missing.
+  bucket: http://rustfs-svc.rustfs.svc.cluster.local:9000/juicefs
+  # Same pair as rustfs.accessKey / rustfs.secretKey below.
   accessKey: <access-key>
   secretKey: <secret-key>
 
 rustfs:
   # Root credentials of the in-cluster RustFS (also its console login), e.g.:
   #   openssl rand -hex 10   /   openssl rand -hex 24
-  # When JuiceFS stores its data in RustFS, use the same pair for
-  # juicefs.accessKey / juicefs.secretKey above.
   accessKey: <access-key>
   secretKey: <secret-key>
   driveSize: 10Gi                            # per drive, 1 drive per node

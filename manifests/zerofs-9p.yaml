@@ -1,0 +1,112 @@
+# ZeroFS exporting a shared folder over 9P (9p2000.L, TCP 5564).
+# ZeroFS is a filesystem by itself: it stores its data directly in S3 (the
+# in-cluster RustFS, bucket "zerofs", prefix "9p"), not on a PVC.
+# The "zerofs" bucket must exist before the first start: create it by hand.
+#
+# Needs the zerofs-credentials Secret (shared with zerofs-nfs.yaml): copy
+# zerofs-credentials.example.yaml to zerofs-credentials.yaml, fill it in, apply it.
+#
+#   kubectl apply -f manifests/zerofs-9p.yaml
+#
+# Client (pod or VM): the kernel 9p client takes an IP, not a hostname:
+#   IP=$(getent hosts zerofs-9p.default.svc.cluster.local | cut -d' ' -f1)
+#   mount -t 9p -o trans=tcp,port=5564,version=9p2000.L,cache=mmap,access=user $IP /mnt/9p
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zerofs-9p-config
+  namespace: default
+data:
+  zerofs.toml: |
+    [cache]
+    dir = "/cache"
+    disk_size_gb = 4.0
+    memory_size_gb = 0.5
+
+    [storage]
+    url = "s3://zerofs/9p"
+    encryption_password = "${ZEROFS_PASSWORD}"
+
+    [servers.ninep]
+    addresses = ["0.0.0.0:5564"]
+
+    [aws]
+    access_key_id = "${AWS_ACCESS_KEY_ID}"
+    secret_access_key = "${AWS_SECRET_ACCESS_KEY}"
+    endpoint = "http://rustfs-svc.rustfs.svc.cluster.local:9000"
+    default_region = "us-east-1"
+    allow_http = "true"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zerofs-9p
+  namespace: default
+spec:
+  replicas: 1
+  # ZeroFS is single-writer on its S3 prefix: stop the old pod before the new one
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: zerofs-9p
+  template:
+    metadata:
+      labels:
+        app: zerofs-9p
+    spec:
+      # The image runs as uid 1001: make the cache volume writable for it
+      securityContext:
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+      containers:
+        - name: zerofs
+          image: ghcr.io/barre/zerofs:2.3.7
+          args: ["run", "-c", "/config/zerofs.toml"]
+          envFrom:
+            - secretRef:
+                name: zerofs-credentials
+          ports:
+            - containerPort: 5564
+              name: ninep
+              protocol: TCP
+          readinessProbe:
+            tcpSocket:
+              port: ninep
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 768Mi
+            limits:
+              memory: 2Gi
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: cache
+              mountPath: /cache
+      volumes:
+        - name: config
+          configMap:
+            name: zerofs-9p-config
+        # Local cache only: the data is in S3
+        - name: cache
+          emptyDir:
+            sizeLimit: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zerofs-9p
+  namespace: default
+spec:
+  type: ClusterIP
+  selector:
+    app: zerofs-9p
+  ports:
+    - name: ninep
+      port: 5564
+      targetPort: ninep
+      protocol: TCP

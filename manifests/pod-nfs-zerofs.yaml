@@ -1,0 +1,69 @@
+# Test pod that sees the ZeroFS NFS share (manifests/zerofs-nfs.yaml): a
+# sidecar mounts the export and shares the mount with the app. This is
+# ZeroFS's own filesystem (data in S3), not the JuiceFS folder of pod-nfs-ganesha.
+#
+# How the mount reaches the app container:
+#   - the sidecar (privileged) mounts NFS on top of an emptyDir with
+#     mountPropagation: Bidirectional, so the mount propagates to the host;
+#   - the app mounts the same emptyDir with HostToContainer, so it sees it.
+# The sidecar is a native sidecar (initContainer + restartPolicy: Always): the
+# app starts only after its startupProbe sees the mount, and the sidecar is
+# stopped (and unmounts) after the app.
+#
+# Same pod against Ganesha (the JuiceFS folder): pod-nfs-ganesha.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-nfs-zerofs
+  namespace: default
+spec:
+  # Leave time to unmount on shutdown
+  terminationGracePeriodSeconds: 30
+  initContainers:
+  - name: nfs-mount
+    image: alpine:3.22
+    restartPolicy: Always
+    env:
+    - name: NFS_SOURCE
+      value: zerofs-nfs.default.svc.cluster.local:/
+    # ZeroFS speaks NFSv3, with its mount service on the same port
+    - name: NFS_OPTS
+      value: vers=3,nolock,tcp,port=2049,mountport=2049,hard,rsize=1048576,wsize=1048576
+    command:
+    - /bin/sh
+    - -c
+    - |
+      set -e
+      apk add --no-cache nfs-utils >/dev/null
+      until mount -t nfs -o "$NFS_OPTS" "$NFS_SOURCE" /shared; do
+        echo "mount failed, retrying in 5s"; sleep 5
+      done
+      echo "mounted $NFS_SOURCE on /shared"
+      # Unmount on stop, otherwise the mount is left behind on the node
+      trap 'umount -l /shared; exit 0' TERM INT
+      sleep infinity & wait
+    securityContext:
+      privileged: true   # mount(2) + Bidirectional propagation
+    startupProbe:
+      exec:
+        command: ["mountpoint", "-q", "/shared"]
+      periodSeconds: 2
+      failureThreshold: 150   # up to 5 min
+    volumeMounts:
+    - mountPath: /shared
+      name: shared
+      mountPropagation: Bidirectional
+  containers:
+  - command:
+    - /bin/sh
+    - -c
+    - sleep infinity
+    image: centos:centos7.9.2009
+    name: app
+    volumeMounts:
+    - mountPath: /data
+      name: shared
+      mountPropagation: HostToContainer
+  volumes:
+  - name: shared
+    emptyDir: {}

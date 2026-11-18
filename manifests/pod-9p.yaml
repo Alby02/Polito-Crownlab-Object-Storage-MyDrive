@@ -1,0 +1,60 @@
+# Test pod that sees the ZeroFS 9P share (manifests/zerofs-9p.yaml): a sidecar
+# mounts it and shares the mount with the app (same mechanism as pod-nfs-ganesha.yaml:
+# privileged native sidecar + Bidirectional / HostToContainer propagation).
+#
+# Uses the node kernel's 9p client (modules 9p + 9pnet_fd, loaded on demand).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-9p
+  namespace: default
+spec:
+  # Leave time to unmount on shutdown
+  terminationGracePeriodSeconds: 30
+  initContainers:
+  - name: ninep-mount
+    image: alpine:3.22
+    restartPolicy: Always
+    env:
+    - name: NINEP_HOST
+      value: zerofs-9p.default.svc.cluster.local
+    - name: NINEP_OPTS
+      value: trans=tcp,port=5564,version=9p2000.L,cache=mmap,access=user,msize=1048576
+    command:
+    - /bin/sh
+    - -c
+    - |
+      # The kernel 9p client takes an IP address, not a hostname
+      until IP=$(getent hosts "$NINEP_HOST" | awk '{print $1; exit}') && [ -n "$IP" ] \
+            && mount -t 9p -o "$NINEP_OPTS" "$IP" /shared; do
+        echo "mount failed, retrying in 5s"; sleep 5
+      done
+      echo "mounted $NINEP_HOST ($IP) on /shared"
+      # Unmount on stop, otherwise the mount is left behind on the node
+      trap 'umount -l /shared; exit 0' TERM INT
+      sleep infinity & wait
+    securityContext:
+      privileged: true   # mount(2) + Bidirectional propagation
+    startupProbe:
+      exec:
+        command: ["mountpoint", "-q", "/shared"]
+      periodSeconds: 2
+      failureThreshold: 150   # up to 5 min
+    volumeMounts:
+    - mountPath: /shared
+      name: shared
+      mountPropagation: Bidirectional
+  containers:
+  - command:
+    - /bin/sh
+    - -c
+    - sleep infinity
+    image: centos:centos7.9.2009
+    name: app
+    volumeMounts:
+    - mountPath: /data
+      name: shared
+      mountPropagation: HostToContainer
+  volumes:
+  - name: shared
+    emptyDir: {}

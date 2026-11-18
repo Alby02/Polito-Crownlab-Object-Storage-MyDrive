@@ -1,0 +1,87 @@
+# vm-nfs-zerofs: the ZeroFS NFS share (manifests/zerofs-nfs.yaml) mounted at
+# /mnt/drive over NFSv3. This is ZeroFS's own filesystem (data in S3), not the
+# JuiceFS folder of vm-juicefs / vm-nfs-ganesha.
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  labels:
+    kubevirt.io/os: linux
+  name: vm-nfs-zerofs
+spec:
+  runStrategy: Always
+  dataVolumeTemplates:
+    - metadata:
+        name: vm-nfs-zerofs-rootdisk
+      spec:
+        storage:
+          storageClassName: juicefs-sc
+          # RWX: live migration attaches the disk on both nodes during the move
+          accessModes:
+            - ReadWriteMany
+          resources:
+            requests:
+              storage: 7Gi
+        source:
+          http:
+            url: "https://download.fedoraproject.org/pub/fedora/linux/releases/45/Cloud/x86_64/images/Fedora-Cloud-Base-AmazonEC2-45-1.4.x86_64.raw.xz"
+  template:
+    metadata:
+      labels:
+        kubevirt.io/domain: vm-nfs-zerofs
+    spec:
+      domain:
+        cpu:
+          cores: 2
+        devices:
+          disks:
+            - disk:
+                bus: virtio
+              name: disk0
+            - cdrom:
+                bus: sata
+                readonly: true
+              name: cloudinitdisk
+          # Masquerade (NAT behind the pod IP): required for live migration.
+          # The guest gets the pod's DNS settings, so it resolves cluster
+          # Service names.
+          interfaces:
+            - name: default
+              masquerade: {}
+        machine:
+          type: q35
+        resources:
+          requests:
+            memory: 2048M
+      networks:
+        - name: default
+          pod: {}
+      volumes:
+        - name: disk0
+          dataVolume:
+            name: vm-nfs-zerofs-rootdisk
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            userData: |
+              #cloud-config
+              hostname: vm-nfs-zerofs
+              ssh_pwauth: True
+              disable_root: false
+              ssh_authorized_keys:
+              - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEPlHKVy/e8gzrbWgzpb3om6vvD6a6SxvCF/CGqAxDQB matteominin@MacBook-Pro-3.local
+              - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM0DTfJTuqEhIc1lkSmVrbzhi4fAzc/n2Xe+QRAydMW0 user@DESKTOP-8D9RM1A
+              - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIABl4EEG7Cn8qHdNJeZtJZWcMuuMGmmdWoi4cglyI0nd alberto@DESKTOP-8D9RM1A
+              # mount.nfs helper
+              packages:
+              - nfs-utils
+              # ZeroFS speaks NFSv3 with its mount service on the same port (2049).
+              # hard: on a server restart, I/O waits instead of failing.
+              mounts:
+              - [ "zerofs-nfs.default.svc.cluster.local:/", /mnt/drive, nfs, "vers=3,nolock,tcp,port=2049,mountport=2049,hard,rsize=1048576,wsize=1048576,_netdev,nofail", "0", "0" ]
+              # On first boot the fstab entry is written before nfs-utils is
+              # installed: mount it once here (later boots use fstab).
+              # ZeroFS does not squash users and its root starts owned by root:
+              # hand it to the fedora user (1000) so it can write.
+              runcmd:
+              - mkdir -p /mnt/drive
+              - mount /mnt/drive
+              - chown 1000:1000 /mnt/drive

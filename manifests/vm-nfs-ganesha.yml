@@ -1,15 +1,17 @@
+# vm-nfs-ganesha: same shared folder as vm-juicefs, but reached over NFSv4 through NFS-Ganesha
+# (manifests/ganesha-nfs-server.yaml) instead of VirtioFS. The VM has no PVC of the
+# shared volume: only its own root disk.
 apiVersion: kubevirt.io/v1
 kind: VirtualMachine
 metadata:
   labels:
     kubevirt.io/os: linux
-  name: vm2
+  name: vm-nfs-ganesha
 spec:
   runStrategy: Always
-  # Own root disk: the "fedora" PVC is RWO and already used by vm1
   dataVolumeTemplates:
     - metadata:
-        name: vm2-rootdisk
+        name: vm-nfs-ganesha-rootdisk
       spec:
         storage:
           storageClassName: juicefs-sc
@@ -25,7 +27,7 @@ spec:
   template:
     metadata:
       labels:
-        kubevirt.io/domain: vm2
+        kubevirt.io/domain: vm-nfs-ganesha
     spec:
       domain:
         cpu:
@@ -39,15 +41,12 @@ spec:
                 bus: sata
                 readonly: true
               name: cloudinitdisk
-          # Masquerade (NAT behind the pod IP): required for live migration,
-          # the default bridge binding is not migratable.
+          # Masquerade (NAT behind the pod IP): required for live migration.
+          # The guest gets the pod's DNS settings, so it resolves cluster
+          # Service names.
           interfaces:
             - name: default
               masquerade: {}
-          # JuiceFS PVC exposed to the guest through VirtioFS (mount tag: juicefs)
-          filesystems:
-            - name: juicefs
-              virtiofs: {}
         machine:
           type: q35
         resources:
@@ -59,35 +58,28 @@ spec:
       volumes:
         - name: disk0
           dataVolume:
-            name: vm2-rootdisk
-        - name: juicefs
-          persistentVolumeClaim:
-            claimName: juicefs-pvc
+            name: vm-nfs-ganesha-rootdisk
         - name: cloudinitdisk
           cloudInitNoCloud:
             userData: |
               #cloud-config
-              hostname: vm2
+              hostname: vm-nfs-ganesha
               ssh_pwauth: True
               disable_root: false
               ssh_authorized_keys:
               - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEPlHKVy/e8gzrbWgzpb3om6vvD6a6SxvCF/CGqAxDQB matteominin@MacBook-Pro-3.local
               - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM0DTfJTuqEhIc1lkSmVrbzhi4fAzc/n2Xe+QRAydMW0 user@DESKTOP-8D9RM1A
               - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIABl4EEG7Cn8qHdNJeZtJZWcMuuMGmmdWoi4cglyI0nd alberto@DESKTOP-8D9RM1A
-              # virtiofsd runs as qemu (uid/gid 107) in virt-launcher: every file on
-              # the share is owned by 107, so only root could write to /mnt/juicefs.
-              # bindfs re-exposes it at ~/drive with 107 shown as the fedora user
-              # (1000); new files are still stored as 107 on JuiceFS.
+              # mount.nfs4 helper
               packages:
-              - bindfs
-              - fuse
-              # Mount the JuiceFS volume at boot (tag = filesystem name above),
-              # then the remapped view for the fedora user.
+              - nfs-utils
+              # Ganesha squashes every user to 107 (see ganesha-nfs-server.yaml), so
+              # the fedora user can write without any remapping in the guest.
+              # hard: on a server restart, I/O waits instead of failing.
               mounts:
-              - [juicefs, /mnt/juicefs, virtiofs, "defaults,nofail", "0", "0"]
-              - [/mnt/juicefs, /mnt/drive, fuse.bindfs, "map=107/1000:@107/@1000,x-systemd.requires-mounts-for=/mnt/juicefs,nofail", "0", "0"]
-              # On first boot the fstab entry is written before bindfs is installed:
-              # mount it once here (later boots use fstab).
+              - [ "ganesha-nfs.default.svc.cluster.local:/juicefs", /mnt/drive, nfs4, "hard,_netdev,nofail", "0", "0" ]
+              # On first boot the fstab entry is written before nfs-utils is
+              # installed: mount it once here (later boots use fstab).
               runcmd:
               - mkdir -p /mnt/drive
               - mount /mnt/drive

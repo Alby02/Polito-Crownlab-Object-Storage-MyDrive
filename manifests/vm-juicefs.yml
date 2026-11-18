@@ -1,0 +1,93 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  labels:
+    kubevirt.io/os: linux
+  name: vm-juicefs
+spec:
+  runStrategy: Always
+  # Own root disk, imported from the Fedora Cloud image on first start
+  dataVolumeTemplates:
+    - metadata:
+        name: vm-juicefs-rootdisk
+      spec:
+        storage:
+          storageClassName: juicefs-sc
+          # RWX: live migration attaches the disk on both nodes during the move
+          accessModes:
+            - ReadWriteMany
+          resources:
+            requests:
+              storage: 7Gi
+        source:
+          http:
+            url: "https://download.fedoraproject.org/pub/fedora/linux/releases/45/Cloud/x86_64/images/Fedora-Cloud-Base-AmazonEC2-45-1.4.x86_64.raw.xz"
+  template:
+    metadata:
+      labels:
+        kubevirt.io/domain: vm-juicefs
+    spec:
+      domain:
+        cpu:
+          cores: 2
+        devices:
+          disks:
+            - disk:
+                bus: virtio
+              name: disk0
+            - cdrom:
+                bus: sata
+                readonly: true
+              name: cloudinitdisk
+          # Masquerade (NAT behind the pod IP): required for live migration,
+          # the default bridge binding is not migratable.
+          interfaces:
+            - name: default
+              masquerade: {}
+          # JuiceFS PVC exposed to the guest through VirtioFS (mount tag: juicefs)
+          filesystems:
+            - name: juicefs
+              virtiofs: {}
+        machine:
+          type: q35
+        resources:
+          requests:
+            memory: 2048M
+      networks:
+        - name: default
+          pod: {}
+      volumes:
+        - name: disk0
+          dataVolume:
+            name: vm-juicefs-rootdisk
+        - name: juicefs
+          persistentVolumeClaim:
+            claimName: juicefs-pvc
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            userData: |
+              #cloud-config
+              hostname: vm-juicefs
+              ssh_pwauth: True
+              disable_root: false
+              ssh_authorized_keys:
+              - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEPlHKVy/e8gzrbWgzpb3om6vvD6a6SxvCF/CGqAxDQB matteominin@MacBook-Pro-3.local
+              - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM0DTfJTuqEhIc1lkSmVrbzhi4fAzc/n2Xe+QRAydMW0 user@DESKTOP-8D9RM1A
+              - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIABl4EEG7Cn8qHdNJeZtJZWcMuuMGmmdWoi4cglyI0nd alberto@DESKTOP-8D9RM1A
+              # virtiofsd runs as qemu (uid/gid 107) in virt-launcher: every file on
+              # the share is owned by 107, so only root could write to /mnt/juicefs.
+              # bindfs re-exposes it at ~/drive with 107 shown as the fedora user
+              # (1000); new files are still stored as 107 on JuiceFS.
+              packages:
+              - bindfs
+              - fuse
+              # Mount the JuiceFS volume at boot (tag = filesystem name above),
+              # then the remapped view for the fedora user.
+              mounts:
+              - [juicefs, /mnt/juicefs, virtiofs, "defaults,nofail", "0", "0"]
+              - [/mnt/juicefs, /mnt/drive, fuse.bindfs, "map=107/1000:@107/@1000,x-systemd.requires-mounts-for=/mnt/juicefs,nofail", "0", "0"]
+              # On first boot the fstab entry is written before bindfs is installed:
+              # mount it once here (later boots use fstab).
+              runcmd:
+              - mkdir -p /mnt/drive
+              - mount /mnt/drive
