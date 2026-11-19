@@ -1,0 +1,142 @@
+# vm-juicefs-guest: the JuiceFS client runs inside the guest and mounts the
+# "guest" JuiceFS filesystem at /mnt/drive: no CSI driver, no gateway, no
+# VirtioFS. Same filesystem (and files) as pod-juicefs-sidecar; not the CSI
+# one of vm-juicefs / vm-nfs-ganesha.
+#
+# Needs juicefs-guest-credentials (see juicefs-guest-credentials.example.yaml)
+# and its bucket in RustFS. The credentials reach the guest as a read-only
+# disk, so they aren't in this manifest or in cloud-init, but root in the
+# guest can read them: this is the "driver in the VM" placement.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vm-juicefs-guest-cloudinit
+  namespace: default
+type: Opaque
+stringData:
+  userdata: |
+    #cloud-config
+    hostname: vm-juicefs-guest
+    ssh_pwauth: True
+    disable_root: false
+    ssh_authorized_keys:
+    - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEPlHKVy/e8gzrbWgzpb3om6vvD6a6SxvCF/CGqAxDQB matteominin@MacBook-Pro-3.local
+    - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM0DTfJTuqEhIc1lkSmVrbzhi4fAzc/n2Xe+QRAydMW0 user@DESKTOP-8D9RM1A
+    - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIABl4EEG7Cn8qHdNJeZtJZWcMuuMGmmdWoi4cglyI0nd alberto@DESKTOP-8D9RM1A
+    # Every boot (ephemeral root disk): install the client, read the
+    # credentials disk, create the filesystem if it's the first
+    # client, then mount it with a systemd service.
+    write_files:
+    - path: /usr/local/sbin/juicefs-guest-setup
+      permissions: "0755"
+      content: |
+        #!/bin/sh
+        set -e
+        JFS=/usr/local/bin/juicefs
+        # JuiceFS client, same version as the sidecar image
+        if [ ! -x "$JFS" ]; then
+          curl -fsSL https://github.com/juicedata/juicefs/releases/download/v1.4.2/juicefs-1.4.2-linux-amd64.tar.gz \
+            | tar -xz -C /usr/local/bin juicefs
+        fi
+        # Credentials disk: one file per Secret key
+        C=/run/jfscreds
+        mkdir -p "$C"
+        mountpoint -q "$C" || mount -o ro /dev/disk/by-id/virtio-jfscreds "$C"
+        META_URL=$(cat "$C/META_URL")
+        # The first client creates the filesystem; later ones find it.
+        # The S3 keys are stored in the metadata: mounting needs only META_URL.
+        "$JFS" status "$META_URL" >/dev/null 2>&1 || "$JFS" format \
+          --storage s3 --bucket "$(cat "$C/BUCKET")" \
+          --access-key "$(cat "$C/ACCESS_KEY")" --secret-key "$(cat "$C/SECRET_KEY")" \
+          "$META_URL" "$(cat "$C/NAME")"
+        umask 077
+        mkdir -p /etc/juicefs
+        printf 'META_URL=%s\n' "$META_URL" > /etc/juicefs/env
+        umount "$C"
+        systemctl daemon-reload
+        systemctl enable --now juicefs-drive.service
+        # New filesystems start owned by root: let the fedora user write
+        for i in $(seq 60); do mountpoint -q /mnt/drive && break; sleep 1; done
+        chown 1000:1000 /mnt/drive
+    - path: /etc/systemd/system/juicefs-drive.service
+      content: |
+        [Unit]
+        Description=JuiceFS guest filesystem on /mnt/drive
+        Wants=network-online.target
+        After=network-online.target
+
+        [Service]
+        Type=simple
+        EnvironmentFile=/etc/juicefs/env
+        ExecStartPre=/usr/bin/mkdir -p /mnt/drive
+        ExecStart=/usr/local/bin/juicefs mount ${META_URL} /mnt/drive --cache-dir /var/cache/juicefs -o allow_other
+        ExecStop=/usr/local/bin/juicefs umount /mnt/drive
+        Restart=on-failure
+
+        [Install]
+        WantedBy=multi-user.target
+    runcmd:
+    - /usr/local/sbin/juicefs-guest-setup
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  labels:
+    kubevirt.io/os: linux
+  name: vm-juicefs-guest
+spec:
+  runStrategy: Always
+  template:
+    metadata:
+      labels:
+        kubevirt.io/domain: vm-juicefs-guest
+    spec:
+      domain:
+        cpu:
+          cores: 2
+        devices:
+          disks:
+            - disk:
+                bus: virtio
+              name: disk0
+            - cdrom:
+                bus: sata
+                readonly: true
+              name: cloudinitdisk
+            # juicefs-guest-credentials as a small read-only disk, one file per
+            # key; the guest finds it as /dev/disk/by-id/virtio-jfscreds
+            - disk:
+                bus: virtio
+              name: credentials
+              serial: jfscreds
+          # Masquerade (NAT behind the pod IP): required for live migration.
+          # The guest gets the pod's DNS settings, so it resolves cluster
+          # Service names.
+          interfaces:
+            - name: default
+              masquerade: {}
+        machine:
+          type: q35
+        resources:
+          requests:
+            memory: 2048M
+      networks:
+        - name: default
+          pod: {}
+      volumes:
+        # Root disk: the Fedora Cloud image shipped as a container image,
+        # shared read-only by all VMs on a node. Writes go to a local overlay
+        # and are lost when the VM stops: cloud-init runs again on every boot.
+        # Keep the shared data on /mnt/drive.
+        - name: disk0
+          containerDisk:
+            image: quay.io/containerdisks/fedora:45-1.4
+        - name: credentials
+          secret:
+            secretName: juicefs-guest-credentials
+        # cloud-config in a Secret (vm-juicefs-guest-cloudinit, above): over
+        # KubeVirt's 2 KB limit for userData written inline.
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            secretRef:
+              name: vm-juicefs-guest-cloudinit

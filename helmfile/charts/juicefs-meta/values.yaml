@@ -1,5 +1,9 @@
 # Set by ../../helmfile.yaml.gotmpl from backend.yaml.
+# Password of the "juicefs" role (database "juicefs", used by the CSI driver).
 password: ""
+# Password of the "juicefs_guest" role (database "juicefs_guest", used by
+# JuiceFS inside VMs and by sidecar mounts: vm-juicefs-guest, pod-juicefs-sidecar).
+guestPassword: ""
 
 instances: 3
 storage:

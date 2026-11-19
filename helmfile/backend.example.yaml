@@ -13,6 +13,15 @@ juicefs:
   accessKey: <access-key>
   secretKey: <secret-key>
 
+# Second JuiceFS filesystem, mounted by the JuiceFS client itself inside VMs
+# and sidecars (vm-juicefs-guest, pod-juicefs-sidecar), not by the CSI driver.
+# Only its database password is set here (it creates the "juicefs_guest" role);
+# the client settings go in manifests/juicefs-guest-credentials.yaml.
+juicefsGuest:
+  meta:
+    # Alphanumeric only, like juicefs.meta.password, e.g.: openssl rand -hex 24
+    password: <password>
+
 rustfs:
   # Root credentials of the in-cluster RustFS (also its console login), e.g.:
   #   openssl rand -hex 10   /   openssl rand -hex 24

@@ -41,6 +41,7 @@ releases:
     disableValidationOnInstall: true
     values:
       - password: {{ .Values.juicefs.meta.password | quote }}
+        guestPassword: {{ .Values.juicefsGuest.meta.password | quote }}
 
   - name: juicefs-csi-driver
     namespace: kube-system

@@ -1,0 +1,80 @@
+# Test pod with the "guest" JuiceFS filesystem mounted by a sidecar running the
+# JuiceFS client, without the CSI driver: the same filesystem (and files) as
+# vm-juicefs-guest, not the CSI one of pod-juicefs.
+#
+# Needs juicefs-guest-credentials (see juicefs-guest-credentials.example.yaml)
+# and its bucket in RustFS. The first client to start creates the filesystem.
+#
+# How the mount reaches the app container (same as pod-nfs-ganesha.yaml):
+#   - the sidecar (privileged, for FUSE) mounts JuiceFS on an emptyDir with
+#     mountPropagation: Bidirectional, so the mount propagates to the host;
+#   - the app mounts the same emptyDir with HostToContainer, so it sees it.
+# Native sidecar (initContainer + restartPolicy: Always): the app starts only
+# once the filesystem is mounted, and the sidecar stops (and unmounts) last.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-juicefs-sidecar
+  namespace: default
+spec:
+  # Leave time to flush and unmount on shutdown
+  terminationGracePeriodSeconds: 30
+  initContainers:
+  - name: juicefs-mount
+    image: juicedata/mount:ce-v1.4.2
+    restartPolicy: Always
+    envFrom:
+    - secretRef:
+        name: juicefs-guest-credentials
+    command:
+    - /bin/sh
+    - -c
+    - |
+      set -e
+      # The first client creates the filesystem; later ones find it there
+      juicefs status "$META_URL" >/dev/null 2>&1 || juicefs format \
+        --storage s3 --bucket "$BUCKET" \
+        --access-key "$ACCESS_KEY" --secret-key "$SECRET_KEY" \
+        "$META_URL" "$NAME"
+      # Foreground mount; unmount on stop, otherwise it's left on the node
+      juicefs mount "$META_URL" /jfs --cache-dir /var/jfsCache -o allow_other &
+      PID=$!
+      trap 'juicefs umount --force /jfs; exit 0' TERM INT
+      wait $PID
+    securityContext:
+      privileged: true   # FUSE + Bidirectional propagation
+    startupProbe:
+      exec:
+        command: ["sh", "-c", "grep -q ' /jfs fuse.juicefs ' /proc/mounts"]
+      periodSeconds: 2
+      failureThreshold: 150   # up to 5 min
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+    volumeMounts:
+    - mountPath: /jfs
+      name: shared
+      mountPropagation: Bidirectional
+    - mountPath: /var/jfsCache
+      name: cache
+  containers:
+  - command:
+    - /bin/sh
+    - -c
+    - sleep infinity
+    image: centos:centos7.9.2009
+    name: app
+    volumeMounts:
+    - mountPath: /data
+      name: shared
+      mountPropagation: HostToContainer
+  volumes:
+  - name: shared
+    emptyDir: {}
+  # Local read/write cache of the client: lost with the pod, data is in S3
+  - name: cache
+    emptyDir:
+      sizeLimit: 5Gi

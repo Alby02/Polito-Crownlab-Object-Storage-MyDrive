@@ -1,0 +1,29 @@
+# One database per JuiceFS filesystem, each owned by its own role, so one
+# client's credentials can't touch the other filesystem's metadata.
+# Declared here instead of in bootstrap.initdb, which runs only once when the
+# cluster is created: these are reconciled at any time, and adopt a database
+# that already exists (the "juicefs" one created by the old initdb setup).
+# retain: deleting this resource leaves the database and its data in place.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: juicefs
+spec:
+  cluster:
+    name: juicefs-meta
+  name: juicefs
+  owner: juicefs
+  ensure: present
+  databaseReclaimPolicy: retain
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: juicefs-guest
+spec:
+  cluster:
+    name: juicefs-meta
+  name: juicefs_guest
+  owner: juicefs_guest
+  ensure: present
+  databaseReclaimPolicy: retain

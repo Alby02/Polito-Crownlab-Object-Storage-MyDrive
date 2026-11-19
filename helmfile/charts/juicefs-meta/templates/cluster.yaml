@@ -26,12 +26,22 @@ spec:
       number: 1
       dataDurability: required
 
-  bootstrap:
-    initdb:
-      database: juicefs
-      owner: juicefs
-      secret:
-        name: juicefs-meta-credentials
+  # Roles and databases are declared, not created by bootstrap.initdb (which
+  # only runs at creation): the roles here, the databases in databases.yaml.
+  # A new cluster still bootstraps CNPG's default empty "app" database; an
+  # existing one keeps its "juicefs" role and database, adopted as they are.
+  managed:
+    roles:
+      - name: juicefs
+        ensure: present
+        login: true
+        passwordSecret:
+          name: juicefs-meta-credentials
+      - name: juicefs_guest
+        ensure: present
+        login: true
+        passwordSecret:
+          name: juicefs-guest-meta-credentials
 
   resources:
     {{- toYaml .Values.resources | nindent 4 }}

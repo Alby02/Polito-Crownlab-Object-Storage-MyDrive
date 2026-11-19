@@ -1,2 +1,3 @@
 # Filled-in secrets (copied from *.example.yaml)
 zerofs-credentials.yaml
+juicefs-guest-credentials.yaml
