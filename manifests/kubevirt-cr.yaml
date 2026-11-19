@@ -17,6 +17,9 @@ spec:
       featureGates:
         # Share PVCs (the JuiceFS volume) with the guests through VirtioFS.
         - EnableVirtioFsStorageVolumes
+        # Alpha (KubeVirt >= 1.9): Plugin resources, used by
+        # vm-9p-sidecar-mount-plugin.yaml to add a virtiofs device.
+        - Plugins
   customizeComponents: {}
   imagePullPolicy: IfNotPresent
   workloadUpdateStrategy: {}

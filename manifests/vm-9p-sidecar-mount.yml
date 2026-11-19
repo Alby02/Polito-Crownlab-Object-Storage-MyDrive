@@ -1,0 +1,84 @@
+# vm-9p-sidecar-mount: the ZeroFS 9P share (zerofs-9p.yaml), the same files as
+# vm-9p and pod-9p, but mounted in the virt-launcher pod by a sidecar and
+# passed to the guest as a virtiofs filesystem (tag "zerofs9p"): the guest
+# needs no 9p client and no network mount.
+#
+# Needs manifests/vm-9p-sidecar-mount-plugin.yaml (KubeVirt Plugins feature
+# gate, admission policy, Plugin), applied before creating the VM.
+# Not live-migratable: KubeVirt doesn't know about the virtiofs device.
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  labels:
+    kubevirt.io/os: linux
+  name: vm-9p-sidecar-mount
+spec:
+  runStrategy: Always
+  template:
+    metadata:
+      labels:
+        kubevirt.io/domain: vm-9p-sidecar-mount
+        # Opt-in for vm-9p-sidecar-mount-plugin.yaml (sidecars + virtiofs device)
+        mydrive/9p-virtiofs: "true"
+    spec:
+      domain:
+        cpu:
+          cores: 2
+        devices:
+          disks:
+            - disk:
+                bus: virtio
+              name: disk0
+            - cdrom:
+                bus: sata
+                readonly: true
+              name: cloudinitdisk
+          # Masquerade (NAT behind the pod IP). The guest gets the pod's DNS
+          # settings, so it resolves cluster Service names.
+          # Ports listed on purpose: without a list, masquerade forwards every
+          # incoming packet on the pod IP to the guest, including the replies
+          # of the sidecar's 9P connection (opened before the VM started, so
+          # not matched by the NAT rules). The guest answers them with a TCP
+          # reset and ZeroFS drops the mount. With a list, only these ports
+          # go to the guest; everything else stays in the pod.
+          interfaces:
+            - name: default
+              masquerade: {}
+              ports:
+                - name: ssh
+                  port: 22
+                  protocol: TCP
+        machine:
+          type: q35
+        resources:
+          requests:
+            memory: 2048M
+      networks:
+        - name: default
+          pod: {}
+      volumes:
+        # Root disk: the Fedora Cloud image shipped as a container image,
+        # shared read-only by all VMs on a node. Writes go to a local overlay
+        # and are lost when the VM stops: cloud-init runs again on every boot.
+        # Keep the shared data on /mnt/drive.
+        - name: disk0
+          containerDisk:
+            image: quay.io/containerdisks/fedora:45-1.4
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            userData: |
+              #cloud-config
+              hostname: vm-9p-sidecar-mount
+              ssh_pwauth: True
+              disable_root: false
+              ssh_authorized_keys:
+              - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEPlHKVy/e8gzrbWgzpb3om6vvD6a6SxvCF/CGqAxDQB matteominin@MacBook-Pro-3.local
+              - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM0DTfJTuqEhIc1lkSmVrbzhi4fAzc/n2Xe+QRAydMW0 user@DESKTOP-8D9RM1A
+              - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIABl4EEG7Cn8qHdNJeZtJZWcMuuMGmmdWoi4cglyI0nd alberto@DESKTOP-8D9RM1A
+              # virtiofs is in the kernel: fstab can mount it right away.
+              mounts:
+              - [zerofs9p, /mnt/drive, virtiofs, "defaults,nofail", "0", "0"]
+              # ZeroFS does not squash users and its root starts owned by root:
+              # hand it to the fedora user (1000) so it can write.
+              runcmd:
+              - chown 1000:1000 /mnt/drive

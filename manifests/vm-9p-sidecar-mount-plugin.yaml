@@ -1,0 +1,267 @@
+# The ZeroFS 9P share (zerofs-9p.yaml) inside a VM as a virtiofs filesystem,
+# with no network mount in the guest. Applies to every VM whose template has
+# the label  mydrive/9p-virtiofs: "true"  (see vm-9p-sidecar-mount.yml).
+#
+#   ZeroFS 9P server (zerofs-9p Service)
+#         | 9P over TCP
+#   virt-launcher pod
+#     |- ninep-mount  sidecar, privileged: mounts 9P on the "mydrive-share" emptyDir
+#     |- virtiofsd    sidecar, root: exports that mount on a vhost-user socket
+#     '- compute      QEMU: virtiofs device on that socket (tag "zerofs9p")
+#         |
+#   guest: mount -t virtiofs zerofs9p /mnt/drive
+#
+# Two mechanisms, because a KubeVirt Plugin can't add containers to the pod:
+#   - MutatingAdmissionPolicy (Kubernetes >= 1.36): adds the two sidecars, their
+#     volumes, and the socket directory to the compute container;
+#   - KubeVirt Plugin (alpha, KubeVirt >= 1.9, feature gate "Plugins" in
+#     kubevirt-cr.yaml): a CEL domain hook adds the virtiofs device and
+#     the shared memory vhost-user needs to the domain XML.
+#
+#   kubectl apply -f manifests/kubevirt-cr.yaml            # Plugins feature gate
+#   kubectl apply -f manifests/vm-9p-sidecar-mount-plugin.yaml
+#
+# Limits: KubeVirt doesn't know about this device, so the VM can't live-migrate.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mydrive-9p-virtiofs-scripts
+  namespace: default
+data:
+  ninep-mount.sh: |
+    #!/bin/sh
+    # Mount the ZeroFS 9P share on /share; the mount propagates to the
+    # virtiofsd sidecar. The kernel 9p client takes an IP, not a hostname.
+    HOST=zerofs-9p.default.svc.cluster.local
+    OPTS=trans=tcp,port=5564,version=9p2000.L,cache=mmap,access=user,msize=1048576
+    until IP=$(getent hosts "$HOST" | awk '{print $1; exit}') && [ -n "$IP" ] \
+          && mount -t 9p -o "$OPTS" "$IP" /share; do
+      echo "mount failed, retrying in 5s"; sleep 5
+    done
+    echo "mounted $HOST ($IP) on /share"
+    # Unmount on stop, otherwise the mount is left behind on the node
+    trap 'umount -l /share; exit 0' TERM INT
+    sleep infinity & wait
+  virtiofsd.sh: |
+    #!/bin/sh
+    set -e
+    apk add --no-cache virtiofsd >/dev/null
+    DIR=/var/run/mydrive-vfs
+    SOCK=$DIR/zerofs9p.sock
+    rm -f "$SOCK" "$DIR/ready"
+    # One QEMU connection per run: virtiofsd exits when the VM stops, and the
+    # sidecar restarts with a new socket.
+    /usr/libexec/virtiofsd --socket-path="$SOCK" --shared-dir=/share \
+      --sandbox=none --cache=auto &
+    PID=$!
+    until [ -S "$SOCK" ]; do sleep 0.2; done
+    # QEMU runs as uid 107 in the compute container: let it connect
+    chmod 0666 "$SOCK"
+    touch "$DIR/ready"
+    wait $PID
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: mydrive-9p-virtiofs-sidecars
+spec:
+  matchConstraints:
+    # The scripts ConfigMap is in "default"
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: default
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+  matchConditions:
+    # virt-launcher pods carry the VMI's labels
+    - name: opted-in-virt-launcher
+      expression: >-
+        has(object.metadata.labels) &&
+        "mydrive/9p-virtiofs" in object.metadata.labels &&
+        object.metadata.labels["mydrive/9p-virtiofs"] == "true" &&
+        "kubevirt.io" in object.metadata.labels &&
+        object.metadata.labels["kubevirt.io"] == "virt-launcher"
+    - name: not-injected-yet
+      expression: >-
+        !has(object.spec.initContainers) ||
+        !object.spec.initContainers.exists(c, c.name == "ninep-mount")
+  failurePolicy: Fail
+  reinvocationPolicy: Never
+  mutations:
+    # Volumes and the socket directory in the compute container: lists merged
+    # by key (volume name, mount path), so ApplyConfiguration can add to them.
+    - patchType: ApplyConfiguration
+      applyConfiguration:
+        expression: >-
+          Object{
+            spec: Object.spec{
+              volumes: [
+                Object.spec.volumes{
+                  name: "mydrive-share",
+                  emptyDir: Object.spec.volumes.emptyDir{}
+                },
+                Object.spec.volumes{
+                  name: "mydrive-vfs",
+                  emptyDir: Object.spec.volumes.emptyDir{}
+                },
+                Object.spec.volumes{
+                  name: "mydrive-scripts",
+                  configMap: Object.spec.volumes.configMap{
+                    name: "mydrive-9p-virtiofs-scripts",
+                    defaultMode: 365
+                  }
+                }
+              ],
+              containers: [
+                Object.spec.containers{
+                  name: "compute",
+                  volumeMounts: [
+                    Object.spec.containers.volumeMounts{
+                      name: "mydrive-vfs",
+                      mountPath: "/var/run/mydrive-vfs"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+    # The sidecars: JSONPatch, because ApplyConfiguration may not set atomic
+    # lists (command, capabilities.add, exec.command) inside new containers.
+    # Native sidecars (initContainers with restartPolicy Always) start in
+    # order and wait for their startupProbe: 9P mounted -> virtiofsd socket
+    # ready -> only then the compute container (QEMU) starts. Appended after
+    # KubeVirt's own init containers (the list is created first if missing).
+    # Object.spec... types only exist here, not in spec.variables.
+    - patchType: JSONPatch
+      jsonPatch:
+        expression: >-
+          (has(object.spec.initContainers) ? [] :
+            [JSONPatch{op: "add", path: "/spec/initContainers", value: []}]) +
+          [
+            JSONPatch{
+              op: "add",
+              path: "/spec/initContainers/-",
+              value:
+                Object.spec.initContainers{
+                  name: "ninep-mount",
+                  image: "alpine:3.22",
+                  restartPolicy: "Always",
+                  command: ["/bin/sh", "/scripts/ninep-mount.sh"],
+                  securityContext: Object.spec.initContainers.securityContext{
+                    privileged: true,
+                    runAsUser: 0,
+                    runAsNonRoot: false
+                  },
+                  startupProbe: Object.spec.initContainers.startupProbe{
+                    exec: Object.spec.initContainers.startupProbe.exec{
+                      command: ["mountpoint", "-q", "/share"]
+                    },
+                    periodSeconds: 2,
+                    failureThreshold: 150
+                  },
+                  volumeMounts: [
+                    Object.spec.initContainers.volumeMounts{
+                      name: "mydrive-share",
+                      mountPath: "/share",
+                      mountPropagation: "Bidirectional"
+                    },
+                    Object.spec.initContainers.volumeMounts{
+                      name: "mydrive-scripts",
+                      mountPath: "/scripts"
+                    }
+                  ]
+                }
+            },
+            JSONPatch{
+              op: "add",
+              path: "/spec/initContainers/-",
+              value:
+                Object.spec.initContainers{
+                  name: "virtiofsd",
+                  image: "alpine:3.22",
+                  restartPolicy: "Always",
+                  command: ["/bin/sh", "/scripts/virtiofsd.sh"],
+                  securityContext: Object.spec.initContainers.securityContext{
+                    runAsUser: 0,
+                    runAsNonRoot: false,
+                    capabilities: Object.spec.initContainers.securityContext.capabilities{
+                      add: ["CHOWN", "DAC_OVERRIDE", "DAC_READ_SEARCH", "FOWNER",
+                            "FSETID", "SETGID", "SETUID", "MKNOD", "SETFCAP"]
+                    }
+                  },
+                  startupProbe: Object.spec.initContainers.startupProbe{
+                    exec: Object.spec.initContainers.startupProbe.exec{
+                      command: ["test", "-e", "/var/run/mydrive-vfs/ready"]
+                    },
+                    periodSeconds: 2,
+                    failureThreshold: 150
+                  },
+                  volumeMounts: [
+                    Object.spec.initContainers.volumeMounts{
+                      name: "mydrive-share",
+                      mountPath: "/share",
+                      mountPropagation: "HostToContainer"
+                    },
+                    Object.spec.initContainers.volumeMounts{
+                      name: "mydrive-vfs",
+                      mountPath: "/var/run/mydrive-vfs"
+                    },
+                    Object.spec.initContainers.volumeMounts{
+                      name: "mydrive-scripts",
+                      mountPath: "/scripts"
+                    }
+                  ]
+                }
+            }
+          ]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicyBinding
+metadata:
+  name: mydrive-9p-virtiofs-sidecars
+spec:
+  policyName: mydrive-9p-virtiofs-sidecars
+---
+apiVersion: plugin.kubevirt.io/v1alpha1
+kind: Plugin
+metadata:
+  name: mydrive-9p-virtiofs
+spec:
+  # Reference only: the policy above injects the sidecars this plugin relies on
+  mutatingAdmissionPolicies:
+    - name: mydrive-9p-virtiofs-sidecars
+  # KubeVirt v1.9.1 API (the docs describe a newer "launcherHooks" layout).
+  # The expression returns a partial libvirtxml.Domain (Go field names),
+  # deep-merged into the generated domain; lists are replaced as a whole.
+  domainHooks:
+    # The opt-in check is here, not in spec.condition: in v1.9.1 virt-handler
+    # evaluates spec.condition with JSON field names (vmi.metadata.labels)
+    # while admission and virt-launcher use Go names (vmi.Labels), so no label
+    # check passes both. A hook condition only goes through the Go-name one.
+    - condition: '"mydrive/9p-virtiofs" in vmi.Labels && vmi.Labels["mydrive/9p-virtiofs"] == "true"'
+      cel:
+        # vhost-user (virtiofs) needs the guest RAM shared with virtiofsd; the
+        # device connects to the socket of the virtiofsd sidecar instead of
+        # libvirt starting its own virtiofsd. Mount tag in the guest: zerofs9p.
+        expression: >-
+          Domain{
+            MemoryBacking: DomainMemoryBacking{
+              MemorySource: DomainMemorySource{Type: "memfd"},
+              MemoryAccess: DomainMemoryAccess{Mode: "shared"}
+            },
+            Devices: DomainDeviceList{
+              Filesystems: [
+                DomainFilesystem{
+                  Driver: DomainFilesystemDriver{Type: "virtiofs"},
+                  Source: DomainFilesystemSource{
+                    Mount: DomainFilesystemSourceMount{Socket: "/var/run/mydrive-vfs/zerofs9p.sock"}
+                  },
+                  Target: DomainFilesystemTarget{Dir: "zerofs9p"}
+                }
+              ]
+            }
+          }
