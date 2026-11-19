@@ -9,21 +9,6 @@ metadata:
   name: vm-nfs-zerofs
 spec:
   runStrategy: Always
-  dataVolumeTemplates:
-    - metadata:
-        name: vm-nfs-zerofs-rootdisk
-      spec:
-        storage:
-          storageClassName: juicefs-sc
-          # RWX: live migration attaches the disk on both nodes during the move
-          accessModes:
-            - ReadWriteMany
-          resources:
-            requests:
-              storage: 7Gi
-        source:
-          http:
-            url: "https://download.fedoraproject.org/pub/fedora/linux/releases/45/Cloud/x86_64/images/Fedora-Cloud-Base-AmazonEC2-45-1.4.x86_64.raw.xz"
   template:
     metadata:
       labels:
@@ -56,9 +41,13 @@ spec:
         - name: default
           pod: {}
       volumes:
+        # Root disk: the Fedora Cloud image shipped as a container image,
+        # shared read-only by all VMs on a node. Writes go to a local overlay
+        # and are lost when the VM stops: cloud-init runs again on every boot.
+        # Keep the shared data on /mnt/drive.
         - name: disk0
-          dataVolume:
-            name: vm-nfs-zerofs-rootdisk
+          containerDisk:
+            image: quay.io/containerdisks/fedora:45-1.4
         - name: cloudinitdisk
           cloudInitNoCloud:
             userData: |
@@ -73,12 +62,17 @@ spec:
               # mount.nfs helper
               packages:
               - nfs-utils
+              # fstab entry added only after the packages are installed (defer):
+              # cloud-init's `mounts` module would write it and run `mount -a`
+              # before nfs-utils is there, and fail without the mount.nfs helper.
               # ZeroFS speaks NFSv3 with its mount service on the same port (2049).
               # hard: on a server restart, I/O waits instead of failing.
-              mounts:
-              - [ "zerofs-nfs.default.svc.cluster.local:/", /mnt/drive, nfs, "vers=3,nolock,tcp,port=2049,mountport=2049,hard,rsize=1048576,wsize=1048576,_netdev,nofail", "0", "0" ]
-              # On first boot the fstab entry is written before nfs-utils is
-              # installed: mount it once here (later boots use fstab).
+              write_files:
+              - path: /etc/fstab
+                append: true
+                defer: true
+                content: |
+                  zerofs-nfs.default.svc.cluster.local:/ /mnt/drive nfs vers=3,nolock,tcp,port=2049,mountport=2049,hard,rsize=1048576,wsize=1048576,_netdev,nofail 0 0
               # ZeroFS does not squash users and its root starts owned by root:
               # hand it to the fedora user (1000) so it can write.
               runcmd:

@@ -15,21 +15,6 @@ metadata:
   name: vm-9p
 spec:
   runStrategy: Always
-  dataVolumeTemplates:
-    - metadata:
-        name: vm-9p-rootdisk
-      spec:
-        storage:
-          storageClassName: juicefs-sc
-          # RWX: live migration attaches the disk on both nodes during the move
-          accessModes:
-            - ReadWriteMany
-          resources:
-            requests:
-              storage: 7Gi
-        source:
-          http:
-            url: "https://download.fedoraproject.org/pub/fedora/linux/releases/45/Cloud/x86_64/images/Fedora-Cloud-Base-AmazonEC2-45-1.4.x86_64.raw.xz"
   template:
     metadata:
       labels:
@@ -62,9 +47,13 @@ spec:
         - name: default
           pod: {}
       volumes:
+        # Root disk: the Fedora Cloud image shipped as a container image,
+        # shared read-only by all VMs on a node. Writes go to a local overlay
+        # and are lost when the VM stops: cloud-init runs again on every boot.
+        # Keep the shared data on /mnt/drive.
         - name: disk0
-          dataVolume:
-            name: vm-9p-rootdisk
+          containerDisk:
+            image: quay.io/containerdisks/fedora:45-1.4
         - name: cloudinitdisk
           cloudInitNoCloud:
             userData: |

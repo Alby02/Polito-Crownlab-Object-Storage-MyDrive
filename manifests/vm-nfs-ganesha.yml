@@ -1,6 +1,6 @@
 # vm-nfs-ganesha: same shared folder as vm-juicefs, but reached over NFSv4 through NFS-Ganesha
 # (manifests/ganesha-nfs-server.yaml) instead of VirtioFS. The VM has no PVC of the
-# shared volume: only its own root disk.
+# shared volume.
 apiVersion: kubevirt.io/v1
 kind: VirtualMachine
 metadata:
@@ -9,21 +9,6 @@ metadata:
   name: vm-nfs-ganesha
 spec:
   runStrategy: Always
-  dataVolumeTemplates:
-    - metadata:
-        name: vm-nfs-ganesha-rootdisk
-      spec:
-        storage:
-          storageClassName: juicefs-sc
-          # RWX: live migration attaches the disk on both nodes during the move
-          accessModes:
-            - ReadWriteMany
-          resources:
-            requests:
-              storage: 7Gi
-        source:
-          http:
-            url: "https://download.fedoraproject.org/pub/fedora/linux/releases/45/Cloud/x86_64/images/Fedora-Cloud-Base-AmazonEC2-45-1.4.x86_64.raw.xz"
   template:
     metadata:
       labels:
@@ -56,9 +41,13 @@ spec:
         - name: default
           pod: {}
       volumes:
+        # Root disk: the Fedora Cloud image shipped as a container image,
+        # shared read-only by all VMs on a node. Writes go to a local overlay
+        # and are lost when the VM stops: cloud-init runs again on every boot.
+        # Keep the shared data on /mnt/drive.
         - name: disk0
-          dataVolume:
-            name: vm-nfs-ganesha-rootdisk
+          containerDisk:
+            image: quay.io/containerdisks/fedora:45-1.4
         - name: cloudinitdisk
           cloudInitNoCloud:
             userData: |
@@ -76,10 +65,15 @@ spec:
               # Ganesha squashes every user to 107 (see ganesha-nfs-server.yaml), so
               # the fedora user can write without any remapping in the guest.
               # hard: on a server restart, I/O waits instead of failing.
-              mounts:
-              - [ "ganesha-nfs.default.svc.cluster.local:/juicefs", /mnt/drive, nfs4, "hard,_netdev,nofail", "0", "0" ]
-              # On first boot the fstab entry is written before nfs-utils is
-              # installed: mount it once here (later boots use fstab).
+              # fstab entry added only after the packages are installed (defer):
+              # cloud-init's `mounts` module would write it and run `mount -a`
+              # before nfs-utils is there, and fail without the mount.nfs helper.
+              write_files:
+              - path: /etc/fstab
+                append: true
+                defer: true
+                content: |
+                  ganesha-nfs.default.svc.cluster.local:/juicefs /mnt/drive nfs4 hard,_netdev,nofail 0 0
               runcmd:
               - mkdir -p /mnt/drive
               - mount /mnt/drive

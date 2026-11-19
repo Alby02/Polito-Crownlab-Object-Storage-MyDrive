@@ -6,22 +6,6 @@ metadata:
   name: vm-juicefs
 spec:
   runStrategy: Always
-  # Own root disk, imported from the Fedora Cloud image on first start
-  dataVolumeTemplates:
-    - metadata:
-        name: vm-juicefs-rootdisk
-      spec:
-        storage:
-          storageClassName: juicefs-sc
-          # RWX: live migration attaches the disk on both nodes during the move
-          accessModes:
-            - ReadWriteMany
-          resources:
-            requests:
-              storage: 7Gi
-        source:
-          http:
-            url: "https://download.fedoraproject.org/pub/fedora/linux/releases/45/Cloud/x86_64/images/Fedora-Cloud-Base-AmazonEC2-45-1.4.x86_64.raw.xz"
   template:
     metadata:
       labels:
@@ -57,9 +41,13 @@ spec:
         - name: default
           pod: {}
       volumes:
+        # Root disk: the Fedora Cloud image shipped as a container image,
+        # shared read-only by all VMs on a node. Writes go to a local overlay
+        # and are lost when the VM stops: cloud-init runs again on every boot.
+        # Keep the shared data on /mnt/drive.
         - name: disk0
-          dataVolume:
-            name: vm-juicefs-rootdisk
+          containerDisk:
+            image: quay.io/containerdisks/fedora:45-1.4
         - name: juicefs
           persistentVolumeClaim:
             claimName: juicefs-pvc
@@ -81,13 +69,19 @@ spec:
               packages:
               - bindfs
               - fuse
-              # Mount the JuiceFS volume at boot (tag = filesystem name above),
-              # then the remapped view for the fedora user.
+              # The JuiceFS volume (tag = filesystem name above): virtiofs is in
+              # the kernel, so it can be mounted right away.
               mounts:
               - [juicefs, /mnt/juicefs, virtiofs, "defaults,nofail", "0", "0"]
-              - [/mnt/juicefs, /mnt/drive, fuse.bindfs, "map=107/1000:@107/@1000,x-systemd.requires-mounts-for=/mnt/juicefs,nofail", "0", "0"]
-              # On first boot the fstab entry is written before bindfs is installed:
-              # mount it once here (later boots use fstab).
+              # The remapped view for the fedora user, added to fstab only after
+              # the packages are installed (defer): in `mounts`, cloud-init would
+              # run `mount -a` before bindfs is there and fail.
+              write_files:
+              - path: /etc/fstab
+                append: true
+                defer: true
+                content: |
+                  /mnt/juicefs /mnt/drive fuse.bindfs map=107/1000:@107/@1000,x-systemd.requires-mounts-for=/mnt/juicefs,nofail 0 0
               runcmd:
               - mkdir -p /mnt/drive
               - mount /mnt/drive
